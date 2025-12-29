@@ -1,41 +1,28 @@
-import os, json
+import json, torch
 import numpy as np
-import torch
+from src.model import SimpleCNN
+from src.utils_audio import load_audio, split_fixed, mel_spectrogram, normalize_mel
 
-from .config import CFG
-from .model import SimpleCNN
-from .preprocess import load_fix_length, wav_to_logmel
+def predict_file(path, model_path="models/cnn_melspec.pth", map_path="models/label_map.json"):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    label_map = json.load(open(map_path, "r", encoding="utf-8"))
+    genres = [label_map[str(i)] for i in range(len(label_map))]
 
-def load_artifacts():
-    cfg = CFG()
-    if not (os.path.exists(cfg.label2id_path) and os.path.exists(cfg.ckpt_path)):
-        return None, None, None
+    model = SimpleCNN(n_classes=len(genres))
+    model.load_state_dict(torch.load(model_path, map_location="cpu"))
+    model.to(device).eval()
 
-    with open(cfg.label2id_path, "r", encoding="utf-8") as f:
-        label2id = json.load(f)
-    id2label = {v: k for k, v in label2id.items()}
+    y = load_audio(path, sr=22050)
+    clips = split_fixed(y, 22050, clip_seconds=3.0, hop_seconds=1.5)
 
-    model = SimpleCNN(num_classes=len(label2id))
-    model.load_state_dict(torch.load(cfg.ckpt_path, map_location="cpu"))
-    model.eval()
-    return model, cfg, id2label
-
-def predict(audio_path: str, topk: int = 5):
-    model, cfg, id2label = load_artifacts()
-    if model is None:
-        raise RuntimeError("Model not found. Train first: python -m src.preprocess && python -m src.train")
-
-    y = load_fix_length(audio_path, cfg.sr, cfg.duration)
-    feat = wav_to_logmel(y, cfg)
-    x = torch.from_numpy(feat).unsqueeze(0).unsqueeze(0)  # (1,1,mel,time)
-
+    probs = []
     with torch.no_grad():
-        logits = model(x)
-        prob = torch.softmax(logits, dim=1).squeeze(0).numpy()
+        for seg in clips:
+            m = normalize_mel(mel_spectrogram(seg, sr=22050))
+            x = torch.tensor(m).unsqueeze(0).unsqueeze(0).to(device)  # [1,1,128,T]
+            p = torch.softmax(model(x), dim=1).cpu().numpy()[0]
+            probs.append(p)
 
-    idx = prob.argsort()[::-1][:topk]
-    return [(id2label[int(i)], float(prob[int(i)])) for i in idx]
-
-if __name__ == "__main__":
-    import sys
-    print(predict(sys.argv[1]))
+    mean_p = np.mean(probs, axis=0)
+    top = mean_p.argsort()[::-1][:3]
+    return [(genres[i], float(mean_p[i])) for i in top]
