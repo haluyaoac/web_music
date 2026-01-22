@@ -7,7 +7,7 @@ class ExpCFG:
     seed: int = 42
 
     # ========== 数据 ==========
-    split_json: str = "data/splits/split.json"
+    split_json: str = "data/splits/split_v1_strat.json"
     sr: int = 22050
     clip_seconds: float = 3.0
     hop_seconds: float = 1.5

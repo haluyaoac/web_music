@@ -2,3 +2,5 @@ exp_name,model_type,use_specaug,use_cosine,label_smoothing,weight_decay,params,b
 E0_baseline,small_cnn,0,0,0.0,0.0,23845,0.836735,0.823529,0.802453
 E1_specaug,small_cnn,1,0,0.0,0.0,23845,0.714286,0.823529,0.800159
 E2_traintricks,small_cnn,1,1,0.1,0.0001,23845,0.714286,0.843137,0.810322
+E2a_wd,small_cnn,0,0,0.0,0.0001,23845,0.820000,0.720000,0.725622
+E2b_cosine,small_cnn,0,1,0.0,0.0001,23845,0.800000,0.760000,0.753521
