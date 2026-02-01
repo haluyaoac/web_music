@@ -10,11 +10,19 @@ import json
 import numpy as np
 import torch
 
-from src.model import SimpleCNN
-from src.utils_audio import load_audio, split_fixed, mel_spectrogram, normalize_mel
+from . import exp_cfg as cfg
+from models import build_model
+from src.utils_audio import (
+    load_audio,
+    split_fixed,
+    mel_spectrogram,
+    normalize_mel,
+    slice_clip,
+    uniform_starts,
+)
 
 
-def load_label_map(map_path="models/label_map.json"):
+def load_label_map(map_path=cfg.LABEL_MAP_PATH):
     with open(map_path, "r", encoding="utf-8") as f:
         label_map = json.load(f)
     # label_map keys may be strings
@@ -25,7 +33,7 @@ def load_label_map(map_path="models/label_map.json"):
 def load_model(model_path="models/cnn_melspec.pth", n_classes=5, device=None):
     if device is None:
         device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = SimpleCNN(n_classes=n_classes)
+    model = build_model(cfg.MODEL_TYPE, n_classes=n_classes)
     state = torch.load(model_path, map_location="cpu")
     model.load_state_dict(state)
     model.to(device).eval()
@@ -37,9 +45,12 @@ def predict_proba_file(
     path: str,
     model_path="models/cnn_melspec.pth",
     map_path="models/label_map.json",
-    sr=22050,
-    clip_seconds=3.0,
-    hop_seconds=1.5,
+    sr=cfg.SR,
+    clip_seconds=cfg.INFER_CLIP_SECONDS,
+    hop_seconds=cfg.HOP_SECONDS,
+    num_clips=cfg.INFER_NUM_CLIPS,
+    trim_ratio=cfg.INFER_TRIM_RATIO,
+    trim_seconds=cfg.INFER_TRIM_SECONDS,
 ):
     """
     返回：genres(list), mean_proba(np.ndarray shape [C]), clip_count(int)
@@ -49,7 +60,15 @@ def predict_proba_file(
     model, device = load_model(model_path, n_classes=len(genres))
 
     y = load_audio(path, sr=sr)
-    clips = split_fixed(y, sr, clip_seconds=clip_seconds, hop_seconds=hop_seconds)
+    if num_clips and num_clips > 0:
+        clip_len = int(sr * clip_seconds)
+        starts = uniform_starts(
+            len(y), sr, clip_seconds, num_clips,
+            trim_ratio=trim_ratio, trim_seconds=trim_seconds
+        )
+        clips = [slice_clip(y, s, clip_len) for s in starts]
+    else:
+        clips = split_fixed(y, sr, clip_seconds=clip_seconds, hop_seconds=hop_seconds)
 
     probs = []
     for seg in clips:

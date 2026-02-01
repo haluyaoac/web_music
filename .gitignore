@@ -9,12 +9,15 @@ Thumbs.db
 .idea/
 
 # data / model artifacts
+data/
 data/bad/
 data/raw/
 data/features/
 data/splits/
+models/
 models/checkpoints/
 samples/
 
+runs/
 # logs
 *.log
