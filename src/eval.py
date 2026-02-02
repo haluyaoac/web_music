@@ -7,7 +7,6 @@ os.environ.setdefault("PYTHONNOUSERSITE", "1")
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if BASE_DIR not in sys.path:
     sys.path.insert(0, BASE_DIR)
-import argparse
 import csv
 import json
 import numpy as np
@@ -27,7 +26,8 @@ from utils_audio import (
 )
 
 
-def load_label_map(path="models/label_map.json"):
+def load_label_map(path=cfg.LABEL_MAP_JSON):
+    print("Loading label map from:", path)
     m = json.load(open(path, "r", encoding="utf-8"))
     genres = [m[str(i)] for i in range(len(m))]
     return genres
@@ -178,8 +178,8 @@ def main():
         for k, v in exp_cfg.items():
             if hasattr(cfg, k):
                 setattr(cfg, k, v)
-
-    genres = load_label_map(cfg.LABEL_MAP_PATH)
+    
+    genres = load_label_map(cfg.LABEL_MAP_JSON)
     cfg.NUM_CLASSES = len(genres)
 
     # 模型：按实验配置构建
@@ -205,7 +205,7 @@ def main():
         fp = it["path"]
         label = int(it["label"])
         try:
-            num_clips = args.k if args.k > 0 else cfg.EVAL_NUM_CLIPS
+            num_clips = cfg.EVAL_NUM_CLIPS
             if num_clips > 0:
                 proba = predict_one_file_fixed(
                     model, device, fp,
@@ -239,24 +239,24 @@ def main():
     macro_f1 = float(f1_score(y_true, y_pred, average="macro")) if len(y_true) else 0.0
 
     print(report)
-    print(f"{args.split}_acc={acc:.4f}  macro_f1={macro_f1:.4f}  skipped={skipped}  total={len(items)}")
+    print(f"{cfg.EVAL_SPLIT}_acc={acc:.4f}  macro_f1={macro_f1:.4f}  skipped={skipped}  total={len(items)}")
 
     # 保存报告
-    report_path = os.path.join(out_dir, f"{args.split}_classification_report.txt")
+    report_path = os.path.join(out_dir, f"{cfg.EVAL_SPLIT}_classification_report.txt")
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report)
-        f.write(f"\n\n{args.split}_acc={acc:.6f}\nmacro_f1={macro_f1:.6f}\nskipped={skipped}\n")
+        f.write(f"\n\n{cfg.EVAL_SPLIT}_acc={acc:.6f}\nmacro_f1={macro_f1:.6f}\nskipped={skipped}\n")
     print("saved:", report_path)
 
     # 混淆矩阵（仅对 test/val 都可）
     cm = confusion_matrix(y_true, y_pred, labels=list(range(len(genres))))
-    cm_path = os.path.join(out_dir, f"{args.split}_confusion_matrix.png")
+    cm_path = os.path.join(out_dir, f"{cfg.EVAL_SPLIT}_confusion_matrix.png")
     save_confusion_matrix(cm, genres, cm_path)
     print("saved:", cm_path)
 
     # 更新 summary.csv（只对 test 写入更常见；这里 split=test 才写）
     summary_path = os.path.join(cfg.OUT_ROOT, "summary.csv")
-    if args.split == "test":
+    if cfg.EVAL_SPLIT == "test":
         upsert_summary(summary_path, cfg.EXP_NAME, acc, macro_f1)
         print("updated:", summary_path)
 

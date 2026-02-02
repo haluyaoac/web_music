@@ -66,6 +66,34 @@ def pad_or_trim_1d(y: np.ndarray, target_len: int) -> np.ndarray:
     return y[:target_len]
 
 
+# Slice a fixed-length clip from an in-memory waveform.
+def slice_clip(y: np.ndarray, start_sample: int, clip_len: int) -> np.ndarray:
+    start = max(0, int(start_sample))
+    end = start + int(clip_len)
+    if y.ndim == 1:
+        seg = y[start:end]
+        return pad_or_trim_1d(seg, clip_len)
+    # Stereo: (2, n) or (n, 2) not expected, handle (2, n)
+    if y.shape[0] == 2:
+        seg = y[:, start:end]
+        if seg.shape[1] < clip_len:
+            pad = clip_len - seg.shape[1]
+            seg = np.pad(seg, ((0, 0), (0, pad)))
+        else:
+            seg = seg[:, :clip_len]
+        return seg
+    # Fallback: treat last axis as time
+    seg = y[..., start:end]
+    if seg.shape[-1] < clip_len:
+        pad = clip_len - seg.shape[-1]
+        pad_width = [(0, 0)] * seg.ndim
+        pad_width[-1] = (0, pad)
+        seg = np.pad(seg, pad_width)
+    else:
+        seg = seg[..., :clip_len]
+    return seg
+
+
 # （可选）仍保留一个“随机取一段”的便捷函数
 def load_audio(
     path: str,
@@ -170,6 +198,19 @@ def uniform_starts(
 
     positions = np.linspace(start_min, end_max, num=num_clips)
     return [int(round(p)) for p in positions]
+
+
+# Split a waveform into fixed-length clips with a hop.
+def split_fixed(
+    y: np.ndarray,
+    sr: int,
+    clip_seconds: float = 3.0,
+    hop_seconds: float = 1.5,
+):
+    clip_len = int(sr * clip_seconds)
+    y_len = int(y.shape[-1])
+    starts = candidate_starts(y_len, sr, clip_seconds, hop_seconds)
+    return [slice_clip(y, s, clip_len) for s in starts]
 
 
 # ---------------------------

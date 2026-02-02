@@ -70,3 +70,14 @@
 #   ax3.plot(epochs, train_acc, color='green', label='Train Clip Acc', linestyle='--')
 # c:\Code\python\vscode\music_genre_classifier\src\train.py:140: UserWarning: color is redundantly defined by the 'color' keyword argument and the fmt string "0.340639" (-> color=(0.340639, 0.340639, 0.340639, 1.0)). The keyword argument will take precedence.
 #   ax4.plot(epochs, train_song_acc, color='orange', label='Train Song Acc', linestyle='--')
+
+
+import importlib.util
+spec = importlib.util.spec_from_file_location("eval", "src/eval.py")
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+import exp_cfg
+print("exp_cfg:", exp_cfg.__file__)
+print("LABEL_MAP_JSON:", exp_cfg.LABEL_MAP_JSON)
+
+

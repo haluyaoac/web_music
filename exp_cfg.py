@@ -11,8 +11,7 @@ DATA_SPLITS_DIR = os.path.join(DATA_DIR, 'splits')
 # Data
 USE_DATA: str = "fma8"  # fma8 | fma_medium | fma_large
 SPLIT_JSON: str = os.path.join(DATA_SPLITS_DIR, f"split_{USE_DATA}.json")
-LABEL_MAP_JSON: str = os.path.join(BASE_DIR, "models", "lable_map", USE_DATA + ".json")
-
+LABEL_MAP_JSON = os.path.join(BASE_DIR, "models", "label_map", USE_DATA + ".json")
 # ==========================================
 # 数据策略配置 (Data Strategy)
 # ==========================================
@@ -71,6 +70,10 @@ EVAL_NUM_CLIPS: int = 4                         # 采样多少个均匀分布的
 EVAL_TRIM_RATIO: float = 0.0                    # 开头修剪比例/秒数
 EVAL_TRIM_SECONDS: float = 0.0                  # 结尾修剪比例/秒数
 
+#Eval:
+EVAL_SPLIT = "test"                    # "val" | "test"
+EVAL_NUM_CLIPS: int = 0                         # 0 = use all uniform clips
+
 # Infer: multi-clip mean fusion
 INFER_CLIP_SECONDS: float = CLIP_SECONDS
 INFER_NUM_CLIPS: int = 0                    # 0 = use all uniform clips
@@ -119,3 +122,5 @@ if __name__ == "__main__":
     print(f"当前配置模式: {MODEL_VERSION}")
     #print(f"输入数据形状: {INPUT_SHAPE}")
     print(f"数据存放路径: {FMA_AUDIO_DIR}")
+    print(f"数据集划分路径: {SPLIT_JSON}")
+    print(f"音乐风格类型:{LABEL_MAP_JSON}")
