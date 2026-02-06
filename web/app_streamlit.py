@@ -22,8 +22,7 @@ import pandas as pd
 import streamlit as st
 import matplotlib.pyplot as plt
 
-# 【修改点 1】引入配置和新版工具函数
-import src.exp_cfg as cfg
+import exp_cfg as cfg
 from src.infer import AudioPredictor
 from src.utils_audio import (
     load_audio_whole, 

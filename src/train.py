@@ -199,7 +199,7 @@ def main():
     # 1. 动态计算 worker 数量
     # os.cpu_count() 获取核心数，为了稳定性通常上限设为 8 或 16
     # 如果是在 Windows 上运行报错，请尝试改回 0 或 2
-    num_workers = min(os.cpu_count(), 8) 
+    num_workers = min(os.cpu_count(), 6) 
     print(f"Using {num_workers} dataloader workers")
 
     # 2. 优化 DataLoader 配置

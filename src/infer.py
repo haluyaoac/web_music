@@ -6,7 +6,7 @@ import numpy as np
 
 import exp_cfg as cfg
 from models import build_model
-from utils_audio import (
+from src.utils_audio import (
     load_audio_whole,
     get_clip_starts,
     slice_clip,
@@ -61,6 +61,7 @@ class AudioPredictor:
             mode="uniform", # 推理通常用均匀
             trim_ratio=cfg.INFER_TRIM_RATIO,
             trim_seconds=cfg.INFER_TRIM_SECONDS
+            seed = cfg.RANDOM_SEED
         )
 
         # 3. 提取特征

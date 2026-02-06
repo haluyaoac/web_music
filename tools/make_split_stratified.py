@@ -46,14 +46,6 @@ def stratified_split(files_by_label, seed=42, train=0.8, val=0.1, test=0.1):
     return out, split_counts
 
 def main():
-        # ap = argparse.ArgumentParser()
-        # ap.add_argument("--root", type=str, default="data/raw_fma8")
-        # ap.add_argument("--out", type=str, default="data/splits/split_fma8_v1.json")
-        # ap.add_argument("--seed", type=int, default=42)
-        # ap.add_argument("--train", type=float, default=0.8)
-        # ap.add_argument("--val", type=float, default=0.1)
-        # ap.add_argument("--test", type=float, default=0.1)
-        # args = ap.parse_args()
 
     if abs((cfg.SPLIT_RATIO["train"] + cfg.SPLIT_RATIO["val"] + cfg.SPLIT_RATIO["test"]) - 1.0) > 1e-6:
         raise ValueError("train+val+test must sum to 1.0")

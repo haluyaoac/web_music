@@ -28,17 +28,27 @@ def load_audio_ffmpeg(
 ) -> np.ndarray:
     """使用 FFmpeg 解码指定片段"""
     try:
-        stream = ffmpeg.input(path, ss=offset if offset > 0 else None, t=duration if duration else None)
+        input_kwargs = {}
+        if offset and offset > 0:
+            input_kwargs["ss"] = offset
+        if duration and duration > 0:
+            input_kwargs["t"] = duration
+        stream = ffmpeg.input(path, **input_kwargs)
         stream = stream.output(
             'pipe:',
             format='f32le',
             ac=1 if mono else 2,
             ar=sr,
             vn=None,
-            loglevel="quiet" # 减少日志干扰
+            loglevel="error" # 仅输出错误，避免静默失败
         )
         out, err = stream.run(capture_stdout=True, capture_stderr=True)
+    except ffmpeg.Error as e:
+        # 【关键修改】从 ffmpeg 异常中提取 stderr 并解码，这才是真正的错误原因
+        error_log = e.stderr.decode('utf-8', errors='ignore') if e.stderr else "No stderr captured"
+        raise RuntimeError(f"ffmpeg decode failed: {path}\n--- FFmpeg Log ---\n{error_log}")
     except Exception as e:
+        # 处理其他非 ffmpeg 错误
         raise RuntimeError(f"ffmpeg decode failed: {path}\n{e}")
 
     y = np.frombuffer(out, dtype=np.float32)

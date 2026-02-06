@@ -72,12 +72,87 @@
 #   ax4.plot(epochs, train_song_acc, color='orange', label='Train Song Acc', linestyle='--')
 
 
-import importlib.util
-spec = importlib.util.spec_from_file_location("eval", "src/eval.py")
-m = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(m)
-import exp_cfg
-print("exp_cfg:", exp_cfg.__file__)
-print("LABEL_MAP_JSON:", exp_cfg.LABEL_MAP_JSON)
+import os
+import subprocess
+import numpy as np
+import shutil
 
+def load_audio_ffmpeg(file_path, sr=44100, duration=None):
+    """
+    使用 FFmpeg subprocess 管道直接读取音频。
+    """
+    # 1. 检查环境
+    ffmpeg_cmd = shutil.which("ffmpeg")
+    if not ffmpeg_cmd:
+        raise FileNotFoundError("未找到 ffmpeg，请检查环境变量 PATH")
 
+    file_path = str(file_path)
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"文件不存在: {file_path}")
+
+    # 2. 构造命令 (线性构建，不再用 insert 防止索引错误)
+    # 基础命令
+    cmd = [
+        ffmpeg_cmd,
+        "-v", "error",       # 只打印错误
+        "-i", file_path      # 输入文件
+    ]
+
+    # 【修复点】时长参数必须放在输入文件之后 (作为输出选项) 或者输入选项之前
+    # 这里我们把它作为输出选项，放在 -i 之后， -f 之前
+    if duration is not None:
+        cmd.extend(["-t", str(duration)])
+
+    # 强制输出格式
+    cmd.extend([
+        "-f", "f32le",       # 32位浮点
+        "-ac", "1",          # 单声道
+        "-ar", str(sr),      # 采样率
+        "-"                  # 输出到管道
+    ])
+
+    try:
+        # 3. 执行
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            bufsize=10**8
+        )
+        
+        stdout_data, stderr_data = process.communicate()
+
+        # 4. 检查报错
+        if process.returncode != 0:
+            # 解码 stderr
+            err_msg = stderr_data.decode('utf-8', 'ignore').strip()
+            # 如果是空错误信息，可能是 ffmpeg 没报错但退出了
+            if not err_msg:
+                err_msg = f"Unknown FFmpeg error (Exit code {process.returncode})"
+            raise RuntimeError(f"FFmpeg Error: {err_msg}")
+
+        # 5. 转 Numpy
+        audio = np.frombuffer(stdout_data, dtype=np.float32)
+
+        if audio.shape[0] == 0:
+            raise RuntimeError("解码数据为空 (Empty Output)")
+
+        return audio.copy()
+
+    except Exception as e:
+        raise RuntimeError(f"Load Failed: {file_path}\n{e}")
+
+# 测试块
+if __name__ == "__main__":
+    # 请替换为你本地真实存在的 MP3 文件路径
+    test_file = r"C:\Code\python\vscode\music_genre_classifier\data\raw_fma8\Electronic\001482.mp3"
+    
+    print(f"Testing: {test_file}")
+    if os.path.exists(test_file):
+        try:
+            y = load_audio_ffmpeg(test_file, duration=5.0)
+            print(f"✅ Success! Shape: {y.shape}")
+        except Exception as e:
+            print(f"❌ Failed: {e}")
+    else:
+        print("⚠️ Test file not found.")

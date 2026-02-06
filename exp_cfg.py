@@ -13,6 +13,12 @@ USE_DATA: str = "fma8"  # fma8 | fma_medium | fma_large
 DATA_SPLITS_DIR = os.path.join(DATA_DIR, 'splits')
 SPLIT_JSON: str = os.path.join(DATA_SPLITS_DIR, f"split_{USE_DATA}.json")
 LABEL_MAP_JSON = os.path.join(BASE_DIR, "models", "label_map", USE_DATA + ".json")
+FMA_AUDIO_DIR = os.path.join(DATA_DIR, "raw_fma8")
+SPLIT_RATIO = {
+    "train": 0.8,
+    "val": 0.1,
+    "test": 0.1
+}
 
 # 随机种子 (复现性)
 RANDOM_SEED: int = 42
@@ -43,7 +49,7 @@ TRAIN_TRIM_SECONDS: float = 0.0     # 首尾修剪时长
 
 # --- 验证集策略 (Validation) ---
 VAL_CLIP_SECONDS: float = CLIP_SECONDS
-VAL_NUM_CLIPS: int = 3              # 验证时均匀采样片段数
+VAL_NUM_CLIPS: int = 15             # 验证时均匀采样片段数
 VAL_TRIM_RATIO: float = 0.0
 VAL_TRIM_SECONDS: float = 0.0
 
@@ -60,12 +66,12 @@ INFER_TRIM_SECONDS: float = 0.0
 # ==============================================================================
 # [新增] 静音检测阈值 (dB)。低于此分贝的片段被视为静音并被丢弃/重试。
 # 建议：环境音设 -40，录音棚音乐设 -60。
-SILENCE_THRESHOLD_DB: float = -50.0 
+SILENCE_THRESHOLD_DB: float = None
 
 # ==============================================================================
 # 5. 模型结构 (Model Architecture)
 # ==============================================================================
-MODEL_TYPE: str = "small_cnn"  # small_cnn | small_cnn_v2 | resnet18
+MODEL_TYPE: str = "resnet18"  # small_cnn | small_cnn_v2 | resnet18
 MODEL_VERSION: str = 'E0'      # 版本号，用于区分实验名
 EXP_NAME: str = MODEL_VERSION  # 实验文件夹名称
 
@@ -73,7 +79,7 @@ EXP_NAME: str = MODEL_VERSION  # 实验文件夹名称
 # 6. 训练与增强策略 (Training Strategy & Augmentation)
 # ==============================================================================
 # --- 数据增强 (Augmentation) ---
-USE_SPECAUG: bool = False       # [策略开关] 频谱遮挡 (SpecAugment)
+USE_SPECAUG: bool = True        # [策略开关] 频谱遮挡 (SpecAugment)
 FREQ_MASK_PARAM: int = 20       # 频率遮挡最大宽度
 TIME_MASK_PARAM: int = 30       # 时间遮挡最大宽度
 NUM_MASKS: int = 2              # 遮挡块数量
@@ -82,7 +88,7 @@ USE_MIXUP: bool = False         # [策略开关] 混合增强 (Mixup)
 MIXUP_ALPHA: float = 0.4        # Beta分布参数 (0.2~1.0)，越大混合越强
 
 # --- 优化与正则化 (Optimization & Regularization) ---
-EPOCHS: int = 100
+EPOCHS: int = 30
 BATCH_SIZE: int = 32
 LR: float = 1e-4
 WEIGHT_DECAY: float = 1e-4      # AdamW 的权重衰减
@@ -90,13 +96,13 @@ WEIGHT_DECAY: float = 1e-4      # AdamW 的权重衰减
 USE_COSINE: bool = True         # [策略开关] 余弦退火学习率调度
 WARMUP_EPOCHS: int = 5          # [新增] 预热轮次，防止初期梯度爆炸
 
-LABEL_SMOOTHING: float = 0.0    # [策略开关] 标签平滑 (推荐 0.1)
+LABEL_SMOOTHING: float = 0.1    # [策略开关] 标签平滑 (推荐 0.1)
 
 # --- 硬件加速与稳定性 (Hardware & Stability) ---
 USE_AMP: bool = True            # [新增] 自动混合精度 (节省显存，加速训练)
 GRAD_CLIP_NORM: float = 1.0     # [新增] 梯度裁剪阈值 (防止梯度爆炸)
 
-EARLY_STOP_PATIENCE: int = 15    # 早停轮次
+EARLY_STOP_PATIENCE: int = 5    # 早停轮次
 
 # ==============================================================================
 # 7. 输出配置 (Output)

@@ -1,13 +1,18 @@
 # split_dataset.py
 import json
+import os
+import sys
 import random
 import torch
 import numpy as np
 from torch.utils.data import Dataset
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if BASE_DIR not in sys.path:
+    sys.path.insert(0, BASE_DIR)
 import exp_cfg as cfg
 
 # 引入 utils_audio 中的新函数
-from utils_audio import (
+from src.utils_audio import (
     get_duration_ffprobe,
     load_audio_ffmpeg,
     mel_spectrogram,
@@ -37,7 +42,7 @@ class SplitDataset(Dataset):
                  time_mask_param=cfg.TIME_MASK_PARAM,
                  num_masks=cfg.NUM_MASKS,
                  silence_threshold_db=None,
-                 ):
+    ):
         # ... (参数赋值保持不变) ...
         self.sr = int(sr)
         self.split = split
@@ -113,7 +118,7 @@ class SplitDataset(Dataset):
                     allow_overlap=self.covering_clips,
                     trim_ratio=self.trim_ratio,
                     trim_seconds=self.trim_seconds,
-                    seed=cfg.RANDOM_SEED if self.split != 'train' else None # 训练时不固定
+                    seed=cfg.RANDOM_SEED
                 )
 
                 segments = [self._decode_segment(fp, s) for s in starts]
@@ -129,7 +134,7 @@ class SplitDataset(Dataset):
                 return x, y_t
 
             except Exception as e:
-                # print(f"[Warning] Skipping {fp}: {e}")
+                print(f"[Warning] Skipping {fp}: {e}")
                 idx = random.randrange(len(self.items))
         
         raise RuntimeError("Too many bad files.")

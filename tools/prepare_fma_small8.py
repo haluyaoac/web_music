@@ -1,85 +1,91 @@
-import os, shutil, argparse
-from pathlib import Path
-
+import os
+import shutil
 import pandas as pd
+from tqdm import tqdm
+import sys
 
-def read_tracks_csv(tracks_csv: Path) -> pd.DataFrame:
-    # FMA 的 tracks.csv 是多级表头
-    df = pd.read_csv(tracks_csv, header=[0,1], index_col=0)
-    return df
+# ================= 配置区域 =================
+# 1. tracks.csv 的路径 (通常在 fma_metadata.zip 解压后)
+CSV_PATH = 'C:/Code/python/vscode/music_genre_classifier/data/fma_metadata/tracks.csv'
 
-def get_col(df, candidates):
-    for c in candidates:
-        if c in df.columns:
-            return c
-    raise KeyError(f"None of these columns found: {candidates}")
+# 2. 原始 fma_small 数据的根目录 (里面应该是 000, 001, ... 等文件夹)
+SOURCE_DIR = 'C:/Users/14367/Desktop/fma_small'
+# 3. 目标输出目录
+DEST_DIR = os.path.join('data', 'raw_fma8')
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--audio_root", type=str, required=True, help="fma_small 解压后的根目录")
-    ap.add_argument("--tracks_csv", type=str, required=True, help="fma_metadata 里的 tracks.csv 路径")
-    ap.add_argument("--out_root", type=str, default="data/raw_fma8", help="输出到你的项目 raw 目录")
-    ap.add_argument("--top_k", type=int, default=8, help="取样本最多的前K个 genre_top")
-    ap.add_argument("--mode", type=str, default="copy", choices=["copy","link"], help="copy 或 link(硬链接)")
-    args = ap.parse_args()
+# ===========================================
 
-    audio_root = Path(args.audio_root)
-    tracks_csv = Path(args.tracks_csv)
-    out_root = Path(args.out_root)
-    out_root.mkdir(parents=True, exist_ok=True)
+def load_tracks(csv_path):
+    """
+    加载 tracks.csv，处理 FMA 特有的多级表头
+    """
+    if not os.path.exists(csv_path):
+        print(f"❌ 错误: 找不到文件 {csv_path}")
+        print("请下载 fma_metadata.zip 并解压，确保路径正确。")
+        sys.exit(1)
 
-    tracks = read_tracks_csv(tracks_csv)
+    print("正在读取 tracks.csv，这可能需要几秒钟...")
+    # header=[0, 1] 指示前两行是表头
+    tracks = pd.read_csv(csv_path, index_col=0, header=[0, 1])
+    
+    # 筛选出 subset 为 'small' 的数据
+    small_tracks = tracks[tracks[('set', 'subset')] == 'small']
+    
+    # 只保留我们要的列：流派 (genre_top)
+    # 注意：FMA small 的 genre_top 应该没有空值，但为了保险还是 dropna 一下
+    return small_tracks[[('track', 'genre_top')]].dropna()
 
-    # 兼容不同版本列名
-    col_subset = get_col(tracks, [( "set", "subset" ), ( "set", "split" )])
-    col_genre = get_col(tracks, [( "track", "genre_top" ), ( "track", "genre" )])
+def organize_files():
+    # 1. 加载元数据
+    df = load_tracks(CSV_PATH)
+    print(f"✅ 成功加载元数据，共有 {len(df)} 条 'small' 数据集记录。")
 
-    # 只取 small 子集
-    small = tracks[tracks[col_subset] == "small"].copy()
-    small = small[small[col_genre].notna()]
+    # 2. 准备计数器
+    success_count = 0
+    missing_count = 0
 
-    # 统计 genre_top，选前 top_k
-    counts = small[col_genre].value_counts()
-    top_genres = list(counts.head(args.top_k).index)
-    print("Selected genres:", top_genres)
-    print("Counts:", counts.head(args.top_k).to_dict())
+    # 3. 遍历每一行进行处理
+    print(f"🚀 开始整理文件到: {DEST_DIR}")
+    
+    # 使用 tqdm 显示进度条
+    for track_id, row in tqdm(df.iterrows(), total=len(df)):
+        genre = row[('track', 'genre_top')]
+        
+        # FMA 的文件名是 6 位数字，例如 ID 2 -> 000002.mp3
+        track_id_str = f"{int(track_id):06d}"
+        
+        # FMA 的原始目录结构是前3位数字作为子文件夹，例如 000002.mp3 在 000/ 文件夹下
+        src_folder = track_id_str[:3]
+        src_filename = track_id_str + ".mp3"
+        
+        # 拼接源文件路径
+        src_path = os.path.join(SOURCE_DIR, src_folder, src_filename)
+        
+        # 拼接目标文件路径: data/raw_fma8/Hip-Hop/000002.mp3
+        # 处理一下 genre 名字，防止有非法字符（虽然 FMA small 的类别名都很干净）
+        safe_genre = genre.replace('/', '_') 
+        dest_folder = os.path.join(DEST_DIR, safe_genre)
+        dest_path = os.path.join(dest_folder, src_filename)
 
-    # 建立 genre -> track_id 集合
-    small = small[small[col_genre].isin(top_genres)]
-    genre_of = small[col_genre].to_dict()  # key=index(track_id), value=genre
-
-    # 遍历音频文件
-    n_ok = 0
-    n_skip = 0
-    for mp3 in audio_root.rglob("*.mp3"):
-        try:
-            track_id = int(mp3.stem)  # 文件名就是 track_id
-        except:
-            n_skip += 1
-            continue
-
-        genre = genre_of.get(track_id, None)
-        if genre is None:
-            n_skip += 1
-            continue
-
-        dst_dir = out_root / genre
-        dst_dir.mkdir(parents=True, exist_ok=True)
-        dst = dst_dir / mp3.name
-
-        if dst.exists():
-            n_skip += 1
-            continue
-
-        if args.mode == "link":
-            os.link(mp3, dst)   # 硬链接，不占双份空间（Windows 可能不支持/权限问题）
+        # 检查源文件是否存在
+        if os.path.exists(src_path):
+            # 确保目标文件夹存在
+            os.makedirs(dest_folder, exist_ok=True)
+            
+            # 复制文件 (使用 copy2 保留元数据，如果想移动用 move)
+            if not os.path.exists(dest_path):
+                shutil.copy2(src_path, dest_path)
+            
+            success_count += 1
         else:
-            shutil.copy2(mp3, dst)
+            # print(f"⚠️ 文件丢失: {src_path}") # 如果丢失太多，可以取消注释查看详情
+            missing_count += 1
 
-        n_ok += 1
-
-    print(f"Done. copied/linked: {n_ok}, skipped: {n_skip}")
-    print("Output:", out_root)
+    print("=" * 30)
+    print("🎉 整理完成！")
+    print(f"✅ 成功复制: {success_count} 个文件")
+    print(f"❌ 源文件缺失: {missing_count} 个文件")
+    print(f"📂 数据已保存在: {os.path.abspath(DEST_DIR)}")
 
 if __name__ == "__main__":
-    main()
+    organize_files()
