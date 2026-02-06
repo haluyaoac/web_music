@@ -62,6 +62,19 @@ class ResNet18Genre(nn.Module):
 
     def forward(self, x):
         return self.net(x)
+# class ResNet18Genre(nn.Module):
+#     def __init__(self, n_classes: int):
+#         super().__init__()
+#         base = resnet18(weights=ResNet18_Weights.DEFAULT)
+#         w = base.conv1.weight.data
+#         base.conv1 = nn.Conv2d(1, 64, kernel_size=7, stride=2, padding=3, bias=False)
+#         base.conv1.weight.data = w.mean(dim=1, keepdim=True)
+#         base.maxpool = nn.Identity() 
+#         base.fc = nn.Linear(base.fc.in_features, n_classes)
+#         self.net = base
+
+#     def forward(self, x):
+#         return self.net(x)
 
 
 def build_model(model_type: str, n_classes: int):

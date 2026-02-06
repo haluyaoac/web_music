@@ -1,2 +1,2 @@
-exp_name,model_type,use_specaug,use_cosine,label_smoothing,weight_decay,params,best_val_acc
-E0,small_cnn,1,1,0.0,0.01,24040,0.528750
+exp_name,model_type,use_specaug,use_cosine,label_smoothing,weight_decay,params,best_val_acc,test_acc,macro_f1
+E0,small_cnn,1,1,0.0,0.01,24040,0.528750,0.200250,0.090575

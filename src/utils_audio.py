@@ -1,136 +1,175 @@
 ﻿# utils_audio.py
-import subprocess
+import os
+import sys
 import random
 import numpy as np
 import librosa
-import exp_cfg as cfg
-
+import ffmpeg
+# 移除 cfg 依赖，保持工具库纯净，参数由外部传入
+# import exp_cfg as cfg 
 
 # ---------------------------
-# FFprobe: 获取音频总时长（秒）
+# 1. FFmpeg 基础 I/O
 # ---------------------------
 def get_duration_ffprobe(path: str) -> float:
-    cmd = [
-        "ffprobe",
-        "-v", "error",
-        "-show_entries", "format=duration",
-        "-of", "default=noprint_wrappers=1:nokey=1",
-        path
-    ]
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if p.returncode != 0:
-        err = p.stderr.decode("utf-8", errors="ignore")
-        raise RuntimeError(f"ffprobe failed: {path}\n{err}")
-    s = p.stdout.decode("utf-8", errors="ignore").strip()
-    return float(s) if s else 0.0
+    try:
+        info = ffmpeg.probe(path)
+        return float(info["format"]["duration"])
+    except Exception as e:
+        # 容错：如果 probe 失败，返回 0，外层处理
+        return 0.0
 
-
-# ---------------------------
-# FFmpeg: 按 offset/duration 解码到 float32 PCM
-# ---------------------------
 def load_audio_ffmpeg(
     path: str,
-    sr: int = 22050,
+    sr: int = 44100,
     mono: bool = True,
     offset: float = 0.0,
     duration: float | None = None
-) -> tuple[np.ndarray, int]:
-    cmd = ["ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "error"]
+) -> np.ndarray:
+    """使用 FFmpeg 解码指定片段"""
+    try:
+        stream = ffmpeg.input(path, ss=offset if offset > 0 else None, t=duration if duration else None)
+        stream = stream.output(
+            'pipe:',
+            format='f32le',
+            ac=1 if mono else 2,
+            ar=sr,
+            vn=None,
+            loglevel="quiet" # 减少日志干扰
+        )
+        out, err = stream.run(capture_stdout=True, capture_stderr=True)
+    except Exception as e:
+        raise RuntimeError(f"ffmpeg decode failed: {path}\n{e}")
 
-    # 快速 seek：-ss 放在 -i 前
-    if offset and offset > 0:
-        cmd += ["-ss", str(offset)]
-
-    cmd += ["-i", path]
-
-    if duration and duration > 0:
-        cmd += ["-t", str(duration)]
-
-    cmd += ["-vn", "-ac", "1" if mono else "2", "-ar", str(sr), "-f", "f32le", "pipe:1"]
-
-    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if p.returncode != 0:
-        err = p.stderr.decode("utf-8", errors="ignore")
-        raise RuntimeError(f"ffmpeg decode failed: {path}\n{err}")
-
-    y = np.frombuffer(p.stdout, dtype=np.float32)
+    y = np.frombuffer(out, dtype=np.float32)
     if not mono:
-        y = y.reshape(-1, 2).T  # (2, n)
+        y = y.reshape(-1, 2).T
+    return y
 
-    return y, sr
+def load_audio_whole(path: str, sr: int = 44100, mono: bool = True) -> np.ndarray:
+    """加载整首音频到内存 (用于推理/评估)"""
+    return load_audio_ffmpeg(path, sr=sr, mono=mono, offset=0.0, duration=None)
 
+# ---------------------------
+# 2. 核心切片逻辑 (统一算法)
+# ---------------------------
+def _fill_remainder(base_items, target_count, method="cycle"):
+    """辅助函数：填充不足的部分"""
+    result = base_items[:]
+    remainder = target_count - len(base_items)
+    if method == "random":
+        result.extend([random.choice(base_items) for _ in range(remainder)])
+    elif method == "cycle":
+        for i in range(remainder):
+            result.append(base_items[i % len(base_items)])
+    return result
 
+def get_clip_starts(
+    y_len: int,
+    sr: int,
+    clip_seconds: float,
+    num_clips: int,
+    mode: str = "uniform",   # "random" | "uniform"
+    allow_overlap: bool = True,
+    trim_ratio: float = 0.0,
+    trim_seconds: float = 0.0,
+    seed: int = None
+):
+    """
+    【核心函数】计算切片起点。
+    Train/Val/Test/Infer 必须全部调用此函数以保证逻辑一致性。
+    """
+    if seed is not None:
+        random.seed(seed)
+        np.random.seed(seed)
+
+    clip_len = int(sr * clip_seconds)
+    
+    # 1. Trim
+    trim = 0
+    if trim_ratio > 0:
+        trim = int(y_len * trim_ratio)
+    elif trim_seconds > 0:
+        trim = int(sr * trim_seconds)
+
+    start_min = trim
+    end_max = y_len - clip_len - trim
+    valid_region_len = end_max - start_min
+    
+    # 2. 异常处理：音频太短
+    if valid_region_len < 0:
+        return [0] * num_clips
+
+    effective_total_len = (y_len - 2 * trim)
+    max_possible = effective_total_len // clip_len
+    max_possible = max(1, max_possible)
+    is_insufficient = num_clips > max_possible
+    
+    final_starts = []
+
+    if mode == "uniform":
+        if not is_insufficient:
+            if num_clips == 1:
+                final_starts = [start_min + valid_region_len // 2]
+            else:
+                final_starts = np.linspace(start_min, end_max, num=num_clips).astype(int).tolist()
+        else:
+            # 资源不足：先生成 max_possible 个均匀切片，再循环补充
+            base_starts = np.linspace(start_min, end_max, num=max_possible).astype(int).tolist()
+            final_starts = _fill_remainder(base_starts, num_clips, method="cycle")
+
+    elif mode == "random":
+        if allow_overlap:
+            final_starts = [random.randint(start_min, end_max) for _ in range(num_clips)]
+            final_starts.sort()
+        else:
+            # 不允许重叠 (简略版：资源不足时退化为随机填充)
+            if not is_insufficient:
+                # 随机间隙算法 (简化实现，保证不重叠)
+                slack = effective_total_len - (num_clips * clip_len)
+                gaps = np.random.rand(num_clips + 1)
+                gaps = (gaps / gaps.sum() * slack).astype(int)
+                # 修正误差
+                gaps[-1] = slack - gaps[:-1].sum()
+                
+                curr = start_min + gaps[0]
+                for i in range(num_clips):
+                    final_starts.append(curr)
+                    curr += clip_len + gaps[i+1]
+            else:
+                # 资源不足：先填满，再随机补
+                slack = effective_total_len - (max_possible * clip_len)
+                gaps = np.random.rand(max_possible + 1)
+                gaps = (gaps / gaps.sum() * slack).astype(int)
+                
+                base_starts = []
+                curr = start_min + gaps[0]
+                for i in range(max_possible):
+                    base_starts.append(curr)
+                    curr += clip_len + gaps[i+1]
+                
+                final_starts = _fill_remainder(base_starts, num_clips, method="random")
+
+    return sorted(final_starts)
+
+# ---------------------------
+# 3. 数组处理
+# ---------------------------
 def pad_or_trim_1d(y: np.ndarray, target_len: int) -> np.ndarray:
     if y.shape[0] < target_len:
         return np.pad(y, (0, target_len - y.shape[0]))
     return y[:target_len]
 
-
-# Slice a fixed-length clip from an in-memory waveform.
 def slice_clip(y: np.ndarray, start_sample: int, clip_len: int) -> np.ndarray:
+    """内存中切片"""
     start = max(0, int(start_sample))
     end = start + int(clip_len)
+    # 简单处理单声道
     if y.ndim == 1:
         seg = y[start:end]
         return pad_or_trim_1d(seg, clip_len)
-    # Stereo: (2, n) or (n, 2) not expected, handle (2, n)
-    if y.shape[0] == 2:
-        seg = y[:, start:end]
-        if seg.shape[1] < clip_len:
-            pad = clip_len - seg.shape[1]
-            seg = np.pad(seg, ((0, 0), (0, pad)))
-        else:
-            seg = seg[:, :clip_len]
-        return seg
-    # Fallback: treat last axis as time
-    seg = y[..., start:end]
-    if seg.shape[-1] < clip_len:
-        pad = clip_len - seg.shape[-1]
-        pad_width = [(0, 0)] * seg.ndim
-        pad_width[-1] = (0, pad)
-        seg = np.pad(seg, pad_width)
-    else:
-        seg = seg[..., :clip_len]
-    return seg
+    return y
 
-
-# （可选）仍保留一个“随机取一段”的便捷函数
-def load_audio(
-    path: str,
-    sr: int = 22050,
-    mono: bool = True,
-    clip_seconds: float = 3.0,
-    random_offset: bool = True,
-) -> tuple[np.ndarray, int]:
-    offset = 0.0
-    if random_offset:
-        try:
-            track_seconds = get_duration_ffprobe(path)
-        except Exception:
-            track_seconds = 0.0
-
-        if track_seconds > clip_seconds:
-            offset = random.uniform(0.0, track_seconds - clip_seconds)
-
-    y, _sr = load_audio_ffmpeg(path, sr=sr, mono=mono, offset=offset, duration=clip_seconds)
-
-    target_len = int(sr * clip_seconds)
-    if mono:
-        y = pad_or_trim_1d(y, target_len)
-    else:
-        # stereo: (2, n)
-        if y.shape[1] < target_len:
-            pad = target_len - y.shape[1]
-            y = np.pad(y, ((0, 0), (0, pad)))
-        else:
-            y = y[:, :target_len]
-
-    return y, _sr
-
-
-# ---------------------------
-# 静音检测
-# ---------------------------
 def is_silent(audio: np.ndarray, threshold_db: float = -60.0) -> bool:
     if audio is None or len(audio) == 0:
         return True
@@ -138,90 +177,15 @@ def is_silent(audio: np.ndarray, threshold_db: float = -60.0) -> bool:
     db = 20 * np.log10(rms + 1e-9)
     return db < threshold_db
 
-
 # ---------------------------
-# 切片起点生成
-# ---------------------------
-def candidate_starts(
-    y_len: int,
-    sr: int,
-    clip_seconds: float,
-    hop_seconds: float,
-    trim_ratio: float = 0.0,
-    trim_seconds: float = 0.0
-):
-    clip_len = int(sr * clip_seconds)
-    hop_len = max(1, int(sr * hop_seconds))
-    if y_len <= 0:
-        return [0]
-
-    trim = 0
-    if trim_ratio > 0:
-        trim = max(trim, int(y_len * trim_ratio))
-    if trim_seconds > 0:
-        trim = max(trim, int(sr * trim_seconds))
-
-    start_min = min(trim, max(0, y_len - 1))
-    end_max = y_len - clip_len - trim
-    if end_max < start_min:
-        return [0]
-
-    starts = list(range(start_min, end_max + 1, hop_len))
-    return starts if starts else [0]
-
-
-def uniform_starts(
-    y_len: int,
-    sr: int,
-    clip_seconds: float,
-    num_clips: int,
-    trim_ratio: float = 0.0,
-    trim_seconds: float = 0.0
-):
-    clip_len = int(sr * clip_seconds)
-    if y_len <= 0:
-        return [0] * max(1, num_clips)
-
-    trim = 0
-    if trim_ratio > 0:
-        trim = max(trim, int(y_len * trim_ratio))
-    if trim_seconds > 0:
-        trim = max(trim, int(sr * trim_seconds))
-
-    start_min = min(trim, max(0, y_len - 1))
-    end_max = y_len - clip_len - trim
-    if end_max < start_min:
-        return [0] * max(1, num_clips)
-
-    if num_clips <= 1:
-        return [start_min]
-
-    positions = np.linspace(start_min, end_max, num=num_clips)
-    return [int(round(p)) for p in positions]
-
-
-# Split a waveform into fixed-length clips with a hop.
-def split_fixed(
-    y: np.ndarray,
-    sr: int,
-    clip_seconds: float = 3.0,
-    hop_seconds: float = 1.5,
-):
-    clip_len = int(sr * clip_seconds)
-    y_len = int(y.shape[-1])
-    starts = candidate_starts(y_len, sr, clip_seconds, hop_seconds)
-    return [slice_clip(y, s, clip_len) for s in starts]
-
-
-# ---------------------------
-# Mel 计算与增强
+# 4. Mel 特征
 # ---------------------------
 def mel_spectrogram(
     y: np.ndarray,
-    sr: int = cfg.SR,
-    n_mels: int = cfg.N_MELS,
-    n_fft: int = cfg.N_FFT,
-    hop_length: int = cfg.HOP_LENGTH,
+    sr: int,
+    n_mels: int,
+    n_fft: int,
+    hop_length: int,
 ) -> np.ndarray:
     mel = librosa.feature.melspectrogram(
         y=y, sr=sr, n_mels=n_mels, n_fft=n_fft, hop_length=hop_length, power=2.0
@@ -229,17 +193,10 @@ def mel_spectrogram(
     log_mel = librosa.power_to_db(mel, ref=np.max)
     return log_mel.astype(np.float32)
 
-
 def normalize_mel(m: np.ndarray) -> np.ndarray:
     return (m - m.mean()) / (m.std() + 1e-6)
 
-
-def spec_augment(
-    m: np.ndarray,
-    freq_mask_param: int = cfg.FREQ_MASK_PARAM,
-    time_mask_param: int = cfg.TIME_MASK_PARAM,
-    num_masks: int = cfg.NUM_MASKS
-) -> np.ndarray:
+def spec_augment(m: np.ndarray, freq_mask_param, time_mask_param, num_masks) -> np.ndarray:
     m = m.copy()
     n_mels, n_steps = m.shape
     for _ in range(num_masks):

@@ -143,8 +143,11 @@ def main():
 
     seed_everything(cfg.RANDOM_SEED)
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    use_amp = (device == "cuda")
+    #使用配置控制 AMP
+    # 只有当设备是 CUDA 且 配置开启 AMP 时才启用
+    use_amp = (device == "cuda") and cfg.USE_AMP
     scaler = GradScaler(enabled=use_amp)
+    print(f"AMP Enabled: {use_amp}")
 
     # 读 label_map（确保 n_classes 对齐）
     with open(cfg.LABEL_MAP_JSON, "r", encoding="utf-8") as f:
@@ -166,31 +169,31 @@ def main():
 
     # 数据
     train_ds = SplitDataset(
-        cfg.SPLIT_JSON, split="train",
+        cfg.SPLIT_JSON, 
+        split="train",
         sr=cfg.SR,
         clip_seconds=cfg.CLIP_SECONDS,
         hop_seconds=cfg.HOP_SECONDS,
-        random_clip=cfg.RANDOM_CLIP,
+        clips_per_item=cfg.TRAIN_CLIPS_PER_ITEM,
+        covering_clips=cfg.TRAIN_COVERING_CLIPS,
+        trim_ratio=cfg.TRAIN_TRIM_RATIO,
+        trim_seconds=cfg.TRAIN_TRIM_SECONDS,
+        unique_clips=cfg.TRAIN_UNIQUE_CLIPS,
+        random_clip=cfg.TRAIN_RANDOM_CLIP,
         use_specaug=cfg.USE_SPECAUG,
         freq_mask_param=cfg.FREQ_MASK_PARAM,
         time_mask_param=cfg.TIME_MASK_PARAM,
         num_masks=cfg.NUM_MASKS,
-        clips_per_item=cfg.TRAIN_CLIPS_PER_ITEM,      
-        unique_clips=cfg.TRAIN_UNIQUE_CLIPS,
-        trim_ratio=cfg.TRAIN_TRIM_RATIO,
-        trim_seconds=cfg.TRAIN_TRIM_SECONDS,
+        silence_threshold_db=cfg.SILENCE_THRESHOLD_DB, 
     )
     val_ds = SplitDataset(
         cfg.SPLIT_JSON, split="val",
         sr=cfg.SR,
-        clip_seconds=cfg.EVAL_CLIP_SECONDS,
+        clip_seconds=cfg.VAL_CLIP_SECONDS,
         hop_seconds=cfg.HOP_SECONDS,
-        random_clip=False,
-        use_specaug=False,
-        deterministic=True,
-        deterministic_num_clips=cfg.EVAL_NUM_CLIPS,
-        deterministic_trim_ratio=cfg.EVAL_TRIM_RATIO,
-        deterministic_trim_seconds=cfg.EVAL_TRIM_SECONDS,
+        clips_per_item=cfg.VAL_NUM_CLIPS,
+        trim_ratio=cfg.VAL_TRIM_RATIO,
+        trim_seconds=cfg.VAL_TRIM_SECONDS,
     )
 
     # 1. 动态计算 worker 数量
@@ -239,7 +242,7 @@ def main():
     with open(log_csv, "w", encoding="utf-8") as f:
         f.write("epoch,train_loss,train_acc,train_song_acc,val_acc,seconds\n")
 
-    warmup_epochs = getattr(cfg, "WARMUP_EPOCHS", 3)
+    warmup_epochs = cfg.WARMUP_EPOCHS
 
     
 
@@ -303,16 +306,15 @@ def main():
                 else:
                     loss = crit(final_pred, y_expanded)
                 
-                # --- 修改结束 ---
 
             scaler.scale(loss).backward()
             scaler.unscale_(opt)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=cfg.GRAD_CLIP_NORM)
             scaler.step(opt)
             scaler.update()
             losses.append(loss.item())
 
-            # --- [Step 3] 准确率统计 (修复 Bug) ---
+            # --- [Step 3] 准确率统计 ---
             with torch.no_grad():
                 # 修改点：选择对应的已扩展（Expanded）标签
                 if use_mixup:

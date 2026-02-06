@@ -1,87 +1,100 @@
-﻿# src/infer.py
+﻿# infer.py
 import os
-# 关键：避免你之前遇到的 torch 导入/compile 等问题（对 Streamlit 也很重要）
-os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
-os.environ.setdefault("TORCH_COMPILE_DISABLE", "1")
-os.environ.setdefault("TORCHDYNAMO_DISABLE", "1")
-os.environ.setdefault("PYTHONNOUSERSITE", "1")
-
 import json
-import numpy as np
 import torch
+import numpy as np
 
-from . import exp_cfg as cfg
+import exp_cfg as cfg
 from models import build_model
-from src.utils_audio import (
-    load_audio,
-    split_fixed,
-    mel_spectrogram,
-    normalize_mel,
+from utils_audio import (
+    load_audio_whole,
+    get_clip_starts,
     slice_clip,
-    uniform_starts,
+    mel_spectrogram,
+    normalize_mel
 )
 
+class AudioPredictor:
+    def __init__(self, model_path=None, device=None):
+        self.device = device if device else ("cuda" if torch.cuda.is_available() else "cpu")
+        
+        # 1. 加载 Label Map
+        with open(cfg.LABEL_MAP_JSON, "r", encoding="utf-8") as f:
+            self.label_map = json.load(f)
+        self.genres = [self.label_map[str(i)] for i in range(len(self.label_map))]
+        self.num_classes = len(self.genres)
 
-def load_label_map(map_path=cfg.LABEL_MAP_PATH):
-    with open(map_path, "r", encoding="utf-8") as f:
-        label_map = json.load(f)
-    # label_map keys may be strings
-    genres = [label_map[str(i)] for i in range(len(label_map))]
-    return genres
+        # 2. 构建模型
+        # 如果未指定路径，尝试自动寻找 (exp_cfg 中的 OUT_ROOT/EXP_NAME/best.pt)
+        if model_path is None:
+            model_path = os.path.join(cfg.OUT_ROOT, cfg.EXP_NAME, "best.pt")
+        
+        print(f"Loading model from: {model_path}")
+        self.model = build_model(cfg.MODEL_TYPE, self.num_classes)
+        
+        # 加载权重
+        if os.path.exists(model_path):
+            state = torch.load(model_path, map_location="cpu")
+            self.model.load_state_dict(state)
+        else:
+            print(f"[Warning] Model path {model_path} not found. Using random weights (Debug).")
+            
+        self.model.to(self.device).eval()
 
+    @torch.no_grad()
+    def predict(self, audio_path, topk=3):
+        """
+        对单个音频文件进行预测
+        :return: (topk_list, mean_probs, raw_logits)
+        """
+        # 1. 加载全长音频
+        y = load_audio_whole(audio_path, sr=cfg.SR)
+        if len(y) == 0:
+            return None, None
 
-def load_model(model_path="models/cnn_melspec.pth", n_classes=5, device=None):
-    if device is None:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-    model = build_model(cfg.MODEL_TYPE, n_classes=n_classes)
-    state = torch.load(model_path, map_location="cpu")
-    model.load_state_dict(state)
-    model.to(device).eval()
-    return model, device
-
-
-@torch.no_grad()
-def predict_proba_file(
-    path: str,
-    model_path="models/cnn_melspec.pth",
-    map_path="models/label_map.json",
-    sr=cfg.SR,
-    clip_seconds=cfg.INFER_CLIP_SECONDS,
-    hop_seconds=cfg.HOP_SECONDS,
-    num_clips=cfg.INFER_NUM_CLIPS,
-    trim_ratio=cfg.INFER_TRIM_RATIO,
-    trim_seconds=cfg.INFER_TRIM_SECONDS,
-):
-    """
-    返回：genres(list), mean_proba(np.ndarray shape [C]), clip_count(int)
-    做法：整段音频切片 -> 每片算 log-mel -> softmax -> 平均融合
-    """
-    genres = load_label_map(map_path)
-    model, device = load_model(model_path, n_classes=len(genres))
-
-    y = load_audio(path, sr=sr)
-    if num_clips and num_clips > 0:
-        clip_len = int(sr * clip_seconds)
-        starts = uniform_starts(
-            len(y), sr, clip_seconds, num_clips,
-            trim_ratio=trim_ratio, trim_seconds=trim_seconds
+        # 2. 统一切片计算 (使用 INFER 配置)
+        starts = get_clip_starts(
+            y_len=len(y),
+            sr=cfg.SR,
+            clip_seconds=cfg.INFER_CLIP_SECONDS,
+            num_clips=cfg.INFER_NUM_CLIPS, 
+            mode="uniform", # 推理通常用均匀
+            trim_ratio=cfg.INFER_TRIM_RATIO,
+            trim_seconds=cfg.INFER_TRIM_SECONDS
         )
-        clips = [slice_clip(y, s, clip_len) for s in starts]
-    else:
-        clips = split_fixed(y, sr, clip_seconds=clip_seconds, hop_seconds=hop_seconds)
 
-    probs = []
-    for seg in clips:
-        m = mel_spectrogram(seg, sr=sr)
-        m = normalize_mel(m)
-        x = torch.tensor(m).unsqueeze(0).unsqueeze(0).to(device)  # [1,1,128,T]
-        p = torch.softmax(model(x), dim=1).cpu().numpy()[0]
-        probs.append(p)
+        # 3. 提取特征
+        clip_len = int(cfg.SR * cfg.INFER_CLIP_SECONDS)
+        batch_mels = []
+        for s in starts:
+            seg = slice_clip(y, s, clip_len)
+            m = mel_spectrogram(seg, cfg.SR, cfg.N_MELS, cfg.N_FFT, cfg.HOP_LENGTH)
+            m = normalize_mel(m)
+            batch_mels.append(m)
+        
+        # 4. 推理
+        if not batch_mels: return None, None
 
-    mean_p = np.mean(probs, axis=0) if len(probs) else np.ones(len(genres)) / len(genres)
-    return genres, mean_p, len(clips)
+        # Stack -> [K, 1, F, T]
+        x = torch.tensor(np.array(batch_mels)).unsqueeze(1).to(self.device)
+        
+        logits = self.model(x) # [K, C]
+        probs = torch.softmax(logits, dim=1).cpu().numpy() # [K, C]
+        
+        # 5. 融合 (Mean)
+        mean_prob = np.mean(probs, axis=0) # [C]
+        
+        # Top K
+        idx = np.argsort(mean_prob)[::-1][:topk]
+        topk_res = [(self.genres[i], float(mean_prob[i])) for i in idx]
+        
+        return topk_res, mean_prob
 
-
-def topk_from_proba(genres, proba, k=5):
-    idx = np.argsort(proba)[::-1][:k]
-    return [(genres[i], float(proba[i])) for i in idx]
+# 简单测试入口
+if __name__ == "__main__":
+    predictor = AudioPredictor() # 自动加载 best.pt
+    # 测试一个文件 (替换为你的实际路径)
+    test_file = "data/raw_fma8/test_song.mp3" 
+    if os.path.exists(test_file):
+        res, _ = predictor.predict(test_file)
+        print("Result:", res)
